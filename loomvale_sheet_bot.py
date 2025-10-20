@@ -161,4 +161,42 @@ def run():
 if __name__ == "__main__":
     # install once locally if needed:
     # pip install google-api-python-client google-auth google-auth-oauthlib requests pillow
-    run()
+def run():
+    rows = read_rows()
+    if not rows:
+        print("No data"); 
+        return
+
+    for i, row in enumerate(rows[1:], start=2):  # header on row 1
+        row += [""] * (8 - len(row))  # A..H
+        cur_status, topic, src = row[0].strip(), row[1].strip(), row[2].strip()
+
+        if not topic or cur_status.lower() != "ready":
+            continue  # only process explicit Ready rows
+
+        tone = tone_for(topic)
+        cap  = caption_prompt(topic, tone)
+        tags = hashtag_prompt(topic)
+
+        if src.lower() == "ai":
+            # create brief, DO NOT mark Completed; keep Status unchanged
+            brief = ai_image_brief(topic).strip()
+            write_row(i, [cur_status, topic, "AI", brief, "", tone, cap, tags])
+            print(f"Row {i}: AI prompt written (status kept: {cur_status})")
+
+        else:
+            # treat as Link (deep search)
+            urls = find_3_portrait_links(topic)
+            links = ", ".join(urls)
+            if len(urls) >= 3:
+                # only now mark Completed
+                write_row(i, ["Completed", topic, "Link", "", links, tone, cap, tags])
+                print(f"Row {i}: 3 links found → Completed")
+            elif len(urls) > 0:
+                # partial: keep status, save what we found
+                write_row(i, [cur_status, topic, "Link", "", links, tone, cap, tags])
+                print(f"Row {i}: {len(urls)} link(s) found (status kept: {cur_status})")
+            else:
+                # nothing found: refresh text fields, leave links empty & status unchanged
+                write_row(i, [cur_status, topic, "Link", "", "", tone, cap, tags])
+                print(f"Row {i}: no links found (status kept: {cur_status})")
