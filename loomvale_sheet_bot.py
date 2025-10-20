@@ -24,12 +24,17 @@ else:
 sheets = build("sheets", "v4", credentials=creds).spreadsheets()
 
 # ---- sheets helpers ----
+SHEET_TAB = "Pipeline"  # your Google Sheet tab name
+
 def read_rows():
-    res = sheets.values().get(spreadsheetId=SHEET_ID, range="Sheet1!A1:H").execute()
+    res = sheets.values().get(
+        spreadsheetId=SHEET_ID,
+        range=f"{SHEET_TAB}!A1:H"
+    ).execute()
     return res.get("values", [])
 
 def write_row(r1, values):
-    rng = f"Sheet1!A{r1}:H{r1}"
+    rng = f"{SHEET_TAB}!A{r1}:H{r1}"
     sheets.values().update(
         spreadsheetId=SHEET_ID,
         range=rng,
