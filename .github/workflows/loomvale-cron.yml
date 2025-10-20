@@ -2,7 +2,7 @@ name: Loomvale Sheet Bot
 
 on:
   schedule:
-    - cron: "0 9 */2 * *"  # every 2 days at 09:00 UTC
+    - cron: "0 9 */2 * *"  # every 2 days @ 09:00 UTC
   workflow_dispatch: {}
 
 jobs:
@@ -20,12 +20,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Set up credentials
+      - name: Set up Google credentials
         run: echo "$GOOGLE_CREDENTIALS_JSON" > credentials.json
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
 
-      - name: Run Loomvale Sheet Bot
+      - name: Run Loomvale bot
         env:
           SHEET_ID: ${{ secrets.SHEET_ID }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
