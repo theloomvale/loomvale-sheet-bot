@@ -1,9 +1,12 @@
 # Loomvale Sheet Bot — Link/AI rows + auto-topic seeding (brand version)
-# - Never edits Column A (Status)
-# - Processes only rows where K != "Done"
-# - LINK rows: finds 3 ultra-hi-res PORTRAIT poster/key-visual DIRECT URLs → E, writes long cinematic caption brief → G, hashtags brief → H, sets K
-# - AI rows: writes Loomvale 5-image brief with ONE brand color focus → D, plus G/H, preserves J, sets K
-# - Empty Topic rows: discovers fresh Loomvale-flavored topics and APPENDS new rows (A=Ready, C=Link, K="To do")
+# Non-destructive:
+#  - Never edits Column A (Status)
+#  - Processes only rows where K != "Done"
+#  - LINK rows: finds up to 3 ultra-hi-res PORTRAIT direct poster/key-visual URLs → E
+#               writes long cinematic caption brief → G, hashtag brief → H, sets K
+#  - AI rows: writes Loomvale 5-image brief with ONE brand color focus → D,
+#             writes G/H, preserves J, sets K
+#  - Empty Topic rows anywhere: discovers new topics and APPENDS rows (A=Ready, C=Link, K="To do")
 
 import os, io, json, requests, hashlib, time, random
 from urllib.parse import urlparse
@@ -11,15 +14,15 @@ from PIL import Image
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
 
-# ----------------- REQUIRED ENV VARS (GitHub Secrets) -----------------
+# ----------------- REQUIRED SECRETS/ENVS -----------------
 # SHEET_ID                 -> your Google Sheet ID
-# GOOGLE_CREDENTIALS_JSON  -> paste full JSON of your Service Account
-# GOOGLE_API_KEY           -> Google API key (for Custom Search)
+# GOOGLE_CREDENTIALS_JSON  -> full JSON of your Service Account (paste into secret)
+# GOOGLE_API_KEY           -> Google API key (Custom Search API enabled)
 # GOOGLE_CX_ID             -> Programmable Search Engine ID
 
-# ----------------- CONFIG -----------------
-SHEET_TAB = "Pipeline"          # sheet tab name; headers A..K must match spec
-MIN_BYTES = 1400                # 1.4 KB minimum
+# ----------------- SHEET CONFIG -----------------
+SHEET_TAB  = "Pipeline"  # tab name
+MIN_BYTES  = 1400        # >= 1.4 KB
 USER_AGENT = "Mozilla/5.0 (Loomvale Sheet Bot)"
 
 # Loomvale brand palette (ONE color focus per AI prompt)
@@ -31,7 +34,7 @@ BRAND_THEMES = [
     "Charcoal gray",
 ]
 
-# Discovery queries tuned to Loomvale (anime, K-culture, design, travel aesthetics)
+# Discovery queries tuned to Loomvale world
 DISCOVERY_QUERIES = [
     "site:imdb.com anime film poster 2025",
     "site:crunchyroll.com news key visual",
@@ -39,11 +42,10 @@ DISCOVERY_QUERIES = [
     "site:ghibli.jp works poster",
     "site:kimetsu.com visual",
     "anime season 2 teaser poster key visual",
-    "k-culture design exhibition poster 2025",
     "studio trigger mecha key visual",
 ]
 
-# ----------------- AUTH -----------------
+# ------------- AUTH -------------
 SHEET_ID       = os.getenv("SHEET_ID")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CX_ID   = os.getenv("GOOGLE_CX_ID")
@@ -61,7 +63,7 @@ else:
 
 sheets = build("sheets", "v4", credentials=creds).spreadsheets()
 
-# ----------------- SHEETS HELPERS -----------------
+# ------------- SHEETS HELPERS -------------
 def read_rows():
     res = sheets.values().get(
         spreadsheetId=SHEET_ID, range=f"{SHEET_TAB}!A1:K"
@@ -69,12 +71,11 @@ def read_rows():
     return res.get("values", [])
 
 def write_rows_bulk(rows_payload):
-    if not rows_payload:
-        return
+    """rows_payload: list of (row_index_1based, [A..K])"""
+    if not rows_payload: return
     data = []
     for r1, vals in rows_payload:
-        if len(vals) < 11:
-            vals += [""] * (11 - len(vals))
+        if len(vals) < 11: vals += [""] * (11 - len(vals))
         data.append({"range": f"{SHEET_TAB}!A{r1}:K{r1}", "values": [vals]})
     sheets.values().batchUpdate(
         spreadsheetId=SHEET_ID,
@@ -82,8 +83,7 @@ def write_rows_bulk(rows_payload):
     ).execute()
 
 def append_rows(rows_to_append):
-    if not rows_to_append:
-        return
+    if not rows_to_append: return
     sheets.values().append(
         spreadsheetId=SHEET_ID,
         range=f"{SHEET_TAB}!A:K",
@@ -92,27 +92,28 @@ def append_rows(rows_to_append):
         body={"values": rows_to_append}
     ).execute()
 
-# ----------------- IMAGE HELPERS -----------------
+# ------------- IMAGE HELPERS (IMPROVED) -------------
 def _is_img(url:str)->bool:
-    return urlparse(url).path.lower().endswith((".jpg",".jpeg",".png",".webp",".jfif",".pjpeg",".pjp"))
+    path = urlparse(url).path.lower()
+    return path.endswith((".jpg",".jpeg",".png",".webp",".jfif",".pjpeg",".pjp"))
 
-def _fetch_bytes(url:str):
-    try:
-        r = requests.get(url, timeout=25, headers={"User-Agent": USER_AGENT})
-        return r.content if r.status_code == 200 else None
-    except Exception:
-        return None
-
-def _portrait_and_over_min(b:bytes)->bool:
-    if not b or len(b) < MIN_BYTES:
-        return False
-    try:
-        w, h = Image.open(io.BytesIO(b)).size
-        return h > w
-    except Exception:
-        return False
+# trusted poster/key visual hosts (add more as you encounter them)
+TRUSTED_POSTER_DOMAINS = {
+    "m.media-amazon.com", "images-na.ssl-images-amazon.com",
+    "impawards.com", "www.impawards.com",
+    "aniplexusa.com", "www.aniplexusa.com",
+    "kimetsu.com", "www.kimetsu.com",
+    "ghibli.jp", "www.ghibli.jp",
+    "crunchyroll.com", "www.crunchyroll.com",
+    "toho.co.jp", "www.toho.co.jp",
+    "trigun-anime.com", "spyroom-anime.com",
+    "sololeveling-anime.net",
+    "madeinabyss.jp", "bst-anime.com",
+    "haikyu.jp", "ichigoproduction.com"
+}
 
 def google_images(query, n=10):
+    """CSE image search, prefer largest available images."""
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": GOOGLE_API_KEY,
@@ -120,49 +121,97 @@ def google_images(query, n=10):
         "q": query,
         "searchType": "image",
         "num": min(n, 10),
-        "safe": "off"
+        "safe": "off",
+        "imgSize": "xxlarge"
     }
     js = requests.get(url, params=params, timeout=25).json()
     items = js.get("items", []) or []
-    return [i.get("link") for i in items if _is_img(i.get("link",""))]
+    links = []
+    for it in items:
+        link = (it.get("link") or "").strip()
+        mime = (it.get("mime") or "").lower()
+        if not link: 
+            continue
+        if mime.startswith("image/") or _is_img(link):
+            links.append(link)
+    return links
+
+def _fetch_bytes(url:str, referer: str | None = None):
+    """Try GET; if blocked, HEAD for Content-Length; return bytes (or dummy bytes of same length)."""
+    headers = {"User-Agent": USER_AGENT}
+    if referer:
+        headers["Referer"] = referer
+    try:
+        r = requests.get(url, timeout=25, headers=headers, stream=True)
+        if r.status_code == 200:
+            return r.content
+        # Fallback: HEAD
+        hr = requests.head(url, timeout=15, headers=headers, allow_redirects=True)
+        if hr.status_code == 200:
+            try:
+                clen = int(hr.headers.get("Content-Length", "0"))
+                return b"." * clen if clen > 0 else None
+            except Exception:
+                return None
+    except Exception:
+        return None
 
 def find_3_portrait_links(topic:str):
+    """
+    Multi-pass:
+      1) Search xxlarge images.
+      2) If bytes available → verify portrait + >= MIN_BYTES.
+      3) If blocked but trusted + good extension → accept.
+    """
     queries = [
-        f"{topic} official poster OR key visual 4K vertical",
+        f'{topic} official poster OR "key visual" vertical 4K',
         f"{topic} portrait poster high resolution",
         f"{topic} promotional art vertical poster",
     ]
     seen, valid = set(), []
     for q in queries:
         for u in google_images(q, n=10):
-            if not u or u in seen:
+            if not u or u in seen: 
                 continue
             seen.add(u)
-            b = _fetch_bytes(u)
-            if _portrait_and_over_min(b):
-                valid.append(u)
-                if len(valid) == 3:
-                    return valid
-        time.sleep(1.0)
+
+            host = urlparse(u).hostname or ""
+            on_trusted = host in TRUSTED_POSTER_DOMAINS
+
+            b = _fetch_bytes(u, referer=f"https://{host}") if host else _fetch_bytes(u)
+            if b and len(b) >= MIN_BYTES:
+                try:
+                    w, h = Image.open(io.BytesIO(b)).size
+                    if h > w:
+                        valid.append(u)
+                        if len(valid) == 3: 
+                            return valid
+                    else:
+                        continue
+                except Exception:
+                    # If decode fails but domain+ext are trustworthy, accept
+                    if on_trusted and _is_img(u):
+                        valid.append(u)
+                        if len(valid) == 3:
+                            return valid
+            else:
+                if on_trusted and _is_img(u):
+                    valid.append(u)
+                    if len(valid) == 3:
+                        return valid
+        time.sleep(0.8)
     return valid
 
-# ----------------- TOPIC DISCOVERY (Loomvale flavor) -----------------
+# ------------- TOPIC DISCOVERY -------------
 def google_web_titles(query, n=5):
     url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": GOOGLE_API_KEY,
-        "cx": GOOGLE_CX_ID,
-        "q": query,
-        "num": min(n, 10),
-        "safe": "off"
-    }
+    params = {"key": GOOGLE_API_KEY, "cx": GOOGLE_CX_ID, "q": query, "num": min(n, 10), "safe": "off"}
     js = requests.get(url, params=params, timeout=25).json()
     items = js.get("items", []) or []
     titles = []
     for it in items:
         t = (it.get("title") or "").strip()
-        if t:
-            titles.append(t)
+        if t: titles.append(t)
     return titles
 
 def normalize_topic_from_title(title:str)->str:
@@ -178,17 +227,15 @@ def discover_new_topics(limit=6):
             if len(norm) > 5:
                 pool.add(norm)
         time.sleep(0.8)
-        if len(pool) >= limit:
-            break
+        if len(pool) >= limit: break
     return list(pool)[:limit]
 
-# ----------------- TEXT / TONE (Loomvale) -----------------
+# ------------- TEXT / TONE (Loomvale) -------------
 def theme_for_row(row_index:int, topic:str)->str:
     h = int(hashlib.sha256(f"{row_index}:{topic}".encode("utf-8")).hexdigest(), 16)
     return BRAND_THEMES[h % len(BRAND_THEMES)]
 
 def tone_for(topic:str):
-    """Cozy + empathic baseline; category-aware."""
     t = topic.lower()
     if any(k in t for k in ["ghibli","mononoke","nausicaä","nausicaa","shinkai","your name","frieren","magus"]):
         return "Nostalgic, cozy, empathic"
@@ -201,7 +248,6 @@ def tone_for(topic:str):
     return "Cozy, empathic"
 
 def caption_prompt(topic:str, tone:str):
-    # Long cinematic caption brief
     return (
         f"Write a cinematic Instagram caption about: {topic}. Tone: {tone}, Loomvale’s cozy-empathic voice. "
         "Start with a short emotional hook, then 2–3 concise lines (world, craft, or story stakes), "
@@ -231,53 +277,51 @@ def ai_image_brief(topic:str, primary_theme:str):
         f"5) After the Rain — intimate close, soft gradients\n"
     )
 
-# ----------------- MAIN -----------------
+# ------------- MAIN -------------
 def run():
     """
-    Sheet headers (row 1 EXACT):
-    A Status | B Topic | C ImageSource | D ImagePrompt | E SourceLinks | F Tone | G CaptionPrompt | H HashtagPrompt | I (unused) | J AI Image Links | K To be actioned
+    Expected headers (row 1 EXACT order):
+    A Status | B Topic | C ImageSource | D ImagePrompt | E SourceLinks | F Tone | G CaptionPrompt | H HashtagPrompt | I FinalImage | J AI Image Links | K Assistant
 
     Rules:
     - Never change A (Status).
     - Only edit rows where K != "Done".
-    - LINK rows: write E (0–3 direct portrait URLs), G long cinematic caption brief, H hashtags.
-        * If 3 URLs → K="Done"
-        * If 1–2 URLs → K="Needs Images"
-        * If 0 URLs → K stays or becomes "Needs Images"
-    - AI rows: write D brief (ONE brand color focus), G caption brief, H hashtags; preserve J; K="Done".
-    - Empty Topic rows: discover new topics and APPEND new rows (A=Ready, C=Link, K="To do").
+    - LINK rows: fill E (0–3 direct portrait URLs), G caption brief, H hashtag brief.
+        * 3 URLs → K="Done"
+        * 1–2 URLs → K="Needs Images"
+        * 0 URLs → K stays/→ "Needs Images"
+    - AI rows: write D brief (ONE brand color focus), G caption brief, H hashtags; keep J; K="Done".
+    - Empty Topic rows anywhere → discover topics and APPEND (A=Ready, C=Link, K="To do").
     """
     rows = read_rows()
     if not rows:
-        print("No data")
-        return
+        print("No data"); return
 
     updates = []
     found_empty_topic_row = False
 
     for i, row in enumerate(rows[1:], start=2):
-        row += [""] * (11 - len(row))  # pad to A..K
-        cur_status = row[0].strip()
-        topic      = row[1].strip()
-        src        = row[2].strip()
-        existing_D = row[3]
-        existing_E = row[4]
-        existing_F = row[5]
-        existing_G = row[6]
-        existing_H = row[7]
-        existing_J = row[9]
-        cur_action = row[10].strip()
+        row += [""] * (11 - len(row))  # pad to 11 cols
+        cur_status = row[0].strip()   # A
+        topic      = row[1].strip()   # B
+        src        = row[2].strip()   # C
+        existing_D = row[3]           # D
+        existing_E = row[4]           # E
+        existing_F = row[5]           # F
+        existing_G = row[6]           # G
+        existing_H = row[7]           # H
+        existing_J = row[9]           # J
+        cur_action = row[10].strip()  # K (Assistant / To be actioned)
 
-        # Track empty topic rows for later seeding
+        # If Topic empty, we’ll seed later
         if not topic:
             found_empty_topic_row = True
             continue
 
-        # Skip already actioned rows
+        # Skip already completed
         if cur_action.lower() == "done":
             continue
 
-        # Derive text
         tone = existing_F or tone_for(topic)
         cap  = existing_G or caption_prompt(topic, tone)
         tags = existing_H or hashtag_prompt(topic)
@@ -287,7 +331,6 @@ def run():
             brief = (existing_D or "").strip() or ai_image_brief(topic, primary_theme)
             vals = [cur_status, topic, "AI", brief, "", tone, cap, tags, "", existing_J, "Done"]
             updates.append((i, vals))
-
         else:
             urls = find_3_portrait_links(topic)
             links_csv = ", ".join(urls) if urls else existing_E
@@ -300,12 +343,14 @@ def run():
             vals = [cur_status, topic, "Link", "", links_csv, tone, cap, tags, "", "", k_val]
             updates.append((i, vals))
 
-        time.sleep(0.4)
+        time.sleep(0.4)  # polite pacing
 
+    # Write updates
     if updates:
         write_rows_bulk(updates)
         print(f"✅ Updated {len(updates)} row(s).")
 
+    # If any blank Topic rows existed, append fresh topics
     if found_empty_topic_row:
         topics = discover_new_topics(limit=6)
         append_payload = []
