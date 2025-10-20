@@ -1,3 +1,5 @@
+# top of file
+import time
 import os, io, json, requests
 from urllib.parse import urlparse
 from PIL import Image
@@ -41,7 +43,8 @@ def write_row(r1, values):
         valueInputOption="RAW",
         body={"values": [values]}
     ).execute()
-
+    time.sleep(1.2)  # <= keep under 60 writes/min
+    
 # ---- image helpers ----
 def _is_img(url:str)->bool:
     return urlparse(url).path.lower().endswith((".jpg",".jpeg",".png",".webp",".jfif",".pjpeg",".pjp"))
