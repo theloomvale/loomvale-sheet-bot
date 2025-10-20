@@ -1,17 +1,17 @@
-# top of file
-import time
-import os, io, json, requests
+import os, io, json, requests, hashlib, time
 from urllib.parse import urlparse
 from PIL import Image
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
 
-# ---- env ----
-SHEET_ID       = os.getenv("SHEET_ID")                      # your Google Sheet ID
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")                # Custom Search JSON API key
-GOOGLE_CX_ID   = os.getenv("GOOGLE_CX_ID")                  # Programmable Search cx
+# ----------------- CONFIG -----------------
+SHEET_TAB = "Pipeline"  # your sheet tab name
 
-# service account (from GitHub Secret or local file)
+SHEET_ID       = os.getenv("SHEET_ID")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_CX_ID   = os.getenv("GOOGLE_CX_ID")
+
+# Service account from GitHub Secret (preferred) or local file
 if os.getenv("GOOGLE_CREDENTIALS_JSON"):
     creds = Credentials.from_service_account_info(
         json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON")),
@@ -25,27 +25,29 @@ else:
 
 sheets = build("sheets", "v4", credentials=creds).spreadsheets()
 
-# ---- sheets helpers ----
-SHEET_TAB = "Pipeline"  # your Google Sheet tab name
-
+# ----------------- SHEETS HELPERS -----------------
 def read_rows():
     res = sheets.values().get(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_TAB}!A1:H"
+        range=f"{SHEET_TAB}!A1:K"
     ).execute()
     return res.get("values", [])
 
-def write_row(r1, values):
-    rng = f"{SHEET_TAB}!A{r1}:H{r1}"
-    sheets.values().update(
+def write_rows_bulk(rows_payload):
+    data = []
+    for r1, vals in rows_payload:
+        if len(vals) < 11:
+            vals += [""] * (11 - len(vals))
+        rng = f"{SHEET_TAB}!A{r1}:K{r1}"
+        data.append({"range": rng, "values": [vals]})
+    if not data:
+        return
+    sheets.values().batchUpdate(
         spreadsheetId=SHEET_ID,
-        range=rng,
-        valueInputOption="RAW",
-        body={"values": [values]}
+        body={"valueInputOption": "RAW", "data": data}
     ).execute()
-    time.sleep(1.2)  # <= keep under 60 writes/min
-    
-# ---- image helpers ----
+
+# ----------------- IMAGE HELPERS -----------------
 def _is_img(url:str)->bool:
     return urlparse(url).path.lower().endswith((".jpg",".jpeg",".png",".webp",".jfif",".pjpeg",".pjp"))
 
@@ -57,7 +59,7 @@ def _bytes(url:str):
         return None
 
 def _portrait_and_over_1_4kb(b:bytes)->bool:
-    if not b or len(b) < 1400:  # >1.4 KB (your minimum)
+    if not b or len(b) < 1400:
         return False
     try:
         w, h = Image.open(io.BytesIO(b)).size
@@ -79,7 +81,6 @@ def google_images(query, n=10):
     return [i["link"] for i in js.get("items", []) if _is_img(i.get("link",""))]
 
 def find_3_portrait_links(topic:str):
-    # tuned for portrait, poster/key visual, hi-res
     queries = [
         f"{topic} official key visual OR official poster 4K vertical",
         f"{topic} theatrical poster portrait high resolution",
@@ -96,107 +97,105 @@ def find_3_portrait_links(topic:str):
                 valid.append(u)
                 if len(valid) == 3:
                     return valid
+        time.sleep(1.5)  # gentle pause between queries
     return valid
 
-# ---- text helpers ----
+# ----------------- BRAND COLOR LOGIC -----------------
+BRAND_THEMES = [
+    "Mizu blue",
+    "Soft sage green",
+    "War lantern orange",
+    "Karma beige",
+    "Charcoal gray",
+]
+
+def theme_for_row(row_index:int, topic:str)->str:
+    h = int(hashlib.sha256(f"{row_index}:{topic}".encode("utf-8")).hexdigest(), 16)
+    return BRAND_THEMES[h % len(BRAND_THEMES)]
+
+# ----------------- TONE / TEXT -----------------
 def tone_for(topic:str):
     t = topic.lower()
-    if any(k in t for k in ["chainsaw man","demon slayer","bleach","attack on titan","trigun","solo leveling","hells paradise"]):
-        return "Dramatic, bold"
-    if any(k in t for k in ["ghibli","mononoke","nausicaä","nausicaa","shinkai","your name"]):
-        return "Nostalgic, cinematic"
+    tone_default = "Cozy, empathic"
+
+    if any(k in t for k in ["ghibli","mononoke","nausicaä","nausicaa","shinkai","your name","frieren","magus"]):
+        return "Nostalgic, cozy, empathic"
+    if any(k in t for k in ["chainsaw man","demon slayer","bleach","attack on titan","trigun","solo leveling","hells paradise","blue exorcist"]):
+        return "Dramatic, bold with emotional depth"
     if any(k in t for k in ["ai","tool","design","trend","creative","tech"]):
-        return "Informative, creative"
-    return "Cinematic, reflective"
+        return "Informative, cozy-tech, empathic"
+    if any(k in t for k in ["romance","love","heart","emotion","connection"]):
+        return "Tender, poetic, heartfelt"
+    return tone_default
 
 def caption_prompt(topic:str, tone:str):
-    return (f"Write an Instagram caption about: {topic}. Tone: {tone}. "
-            "Hook + 2–3 short lines + subtle CTA. Max 300 chars. ≤2 emojis. No hashtags.")
+    return (
+        f"Write an Instagram caption about: {topic}. Tone: {tone}, aligned with Loomvale’s cozy-emphatic voice — cinematic warmth, emotional nuance. "
+        "Structure: 1 short hook, 2–3 concise lines, subtle CTA (e.g., 'save for later'). Max 300 chars, ≤2 emojis, no hashtags."
+    )
 
 def hashtag_prompt(topic:str):
     if any(k in topic.lower() for k in ["ai","tool","design","trend","creative","tech"]):
-        return ("Create 20 Instagram hashtag keywords about: {topic}. "
-                "lowercase tokens, no #, no spaces, comma-separated, broad+niche.")
-    return (f"Create 10 hashtags with '#' included, space-separated, about {topic}. "
-            "Mix franchise, genre, aesthetic.")
+        return ("Create 20 Instagram hashtag keywords about: {topic}. lowercase tokens, no #, comma-separated, broad+niche.")
+    return (f"Create 10 hashtags with '#' included, space-separated, about {topic}. Mix franchise, genre, aesthetic.")
 
-def ai_image_brief(topic:str):
-    return (f"“{topic}” — 5-Image Cinematic Series\n"
-            "• lo-fi painterly film grain; pastel greens + muted gold; gentle rain; cozy cinematic light\n"
-            "Typography: manga dialogue; gray handwritten narration; text integrated\n"
-            "1) Walk Home (shared umbrella) — “You’ll catch a cold.”\n"
-            "2) Crosswalk (puddle reflections) — narration: wish the rain stayed\n"
-            "3) Shelter (bus stop, shared earbuds) — narration: the song was ending\n"
-            "4) Goodbye (bus arrives) — “See you.”\n"
-            "5) After the Rain (quiet close) — narration: the air feels quieter\n")
+def ai_image_brief(topic:str, primary_theme:str):
+    return (
+        f"“{topic}” — 5-Image Cinematic Series (Loomvale brand)\n"
+        f"Overall Style & Tone:\n"
+        f"* Lo-fi, painterly, soft film-grain texture\n"
+        f"* Soft colours (cozy, cinematic warmth)\n"
+        f"* East Asian character type\n"
+        f"* Mixed text style: Manga for dialogue, gray handwritten for narration\n"
+        f"* Text integrated naturally within the artwork\n\n"
+        f"Brand Color Focus: {primary_theme} — use tasteful variations of {primary_theme}; subtle accents from (Mizu blue, Soft sage green, War lantern orange, Karma beige, Charcoal gray) only if needed.\n"
+        f"\nScene 1 — “The Walk Home” (shared umbrella, rain)\nScene 2 — “The Crosswalk” (puddle reflections)\nScene 3 — “The Shelter” (bus stop)\nScene 4 — “The Goodbye” (bus arrival)\nScene 5 — “After the Rain” (quiet bench)\n"
+    )
 
-# ---- main ----
+# ----------------- FINALIZE HELPER -----------------
+def finalize_ai_links(row_number_1based, topic, ai_links_csv, tone, caption, hashtags, current_status):
+    vals = [
+        current_status, topic, "AI", "", "", tone, caption, hashtags, "", ai_links_csv, "Done"
+    ]
+    write_rows_bulk([(row_number_1based, vals)])
+
+# ----------------- MAIN -----------------
 def run():
     rows = read_rows()
     if not rows:
         print("No data"); return
 
-    # Expect columns: A Status, B Topic, C ImageSource, D ImagePrompt, E SourceLinks, F Tone, G CaptionPrompt, H HashtagPrompt
-    for i, row in enumerate(rows[1:], start=2):  # skip header; 1-based indexing for Sheets
-        row += [""] * (8 - len(row))
-        status, topic, src = row[0].strip(), row[1].strip(), row[2].strip()
-
-        if not topic or status.lower() == "completed" or status.lower() != "ready":
+    updates = []
+    for i, row in enumerate(rows[1:], start=2):
+        row += [""] * (11 - len(row))
+        cur_status, topic, src = row[0].strip(), row[1].strip(), row[2].strip()
+        existing_D, existing_E, existing_F, existing_G, existing_H, existing_J, cur_action = row[3], row[4], row[5], row[6], row[7], row[9], row[10].strip()
+        if not topic or cur_action.lower() == "done":
             continue
 
-        t    = tone_for(topic)
-        cap  = caption_prompt(topic, t)
-        tags = hashtag_prompt(topic)
+        tone = existing_F or tone_for(topic)
+        cap  = existing_G or caption_prompt(topic, tone)
+        tags = existing_H or hashtag_prompt(topic)
 
         if src.lower() == "ai":
-            prompt = ai_image_brief(topic)
-            write_row(i, ["Completed", topic, "AI", prompt, "", t, cap, tags])
-            print(f"Row {i}: AI prompt ✓")
+            primary_theme = theme_for_row(i, topic)
+            brief = existing_D.strip() if existing_D else ai_image_brief(topic, primary_theme)
+            vals = [cur_status, topic, "AI", brief, "", tone, cap, tags, "", existing_J, "Done"]
         else:
-            urls  = find_3_portrait_links(topic)
-            links = ", ".join(urls)
-            write_row(i, ["Completed", topic, "Link", "", links, t, cap, tags])
-            print(f"Row {i}: {len(urls)} image links ✓")
+            urls = find_3_portrait_links(topic)
+            links_csv = ", ".join(urls) if urls else existing_E
+            if len(urls) >= 3:
+                k_val = "Done"
+            elif len(urls) > 0:
+                k_val = "Needs Images"
+            else:
+                k_val = cur_action or "Needs Images"
+            vals = [cur_status, topic, "Link", "", links_csv, tone, cap, tags, "", "", k_val]
+        updates.append((i, vals))
+        time.sleep(0.5)
+
+    write_rows_bulk(updates)
+    print(f"✅ Updated {len(updates)} row(s).")
 
 if __name__ == "__main__":
-    # install once locally if needed:
-    # pip install google-api-python-client google-auth google-auth-oauthlib requests pillow
-def run():
-    rows = read_rows()
-    if not rows:
-        print("No data"); 
-        return
-
-    for i, row in enumerate(rows[1:], start=2):  # header on row 1
-        row += [""] * (8 - len(row))  # A..H
-        cur_status, topic, src = row[0].strip(), row[1].strip(), row[2].strip()
-
-        if not topic or cur_status.lower() != "ready":
-            continue  # only process explicit Ready rows
-
-        tone = tone_for(topic)
-        cap  = caption_prompt(topic, tone)
-        tags = hashtag_prompt(topic)
-
-        if src.lower() == "ai":
-            # create brief, DO NOT mark Completed; keep Status unchanged
-            brief = ai_image_brief(topic).strip()
-            write_row(i, [cur_status, topic, "AI", brief, "", tone, cap, tags])
-            print(f"Row {i}: AI prompt written (status kept: {cur_status})")
-
-        else:
-            # treat as Link (deep search)
-            urls = find_3_portrait_links(topic)
-            links = ", ".join(urls)
-            if len(urls) >= 3:
-                # only now mark Completed
-                write_row(i, ["Completed", topic, "Link", "", links, tone, cap, tags])
-                print(f"Row {i}: 3 links found → Completed")
-            elif len(urls) > 0:
-                # partial: keep status, save what we found
-                write_row(i, [cur_status, topic, "Link", "", links, tone, cap, tags])
-                print(f"Row {i}: {len(urls)} link(s) found (status kept: {cur_status})")
-            else:
-                # nothing found: refresh text fields, leave links empty & status unchanged
-                write_row(i, [cur_status, topic, "Link", "", "", tone, cap, tags])
-                print(f"Row {i}: no links found (status kept: {cur_status})")
+    run()
