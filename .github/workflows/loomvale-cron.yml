@@ -1,33 +1,173 @@
-name: Loomvale Sheet Bot
+#!/usr/bin/env python3
+import os
+import time
+import unicodedata
+from typing import List, Optional
 
-on:
-  schedule:
-    - cron: "0 9 */2 * *"  # every 2 days @ 09:00 UTC
-  workflow_dispatch: {}
+import gspread
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-jobs:
-  update-sheet:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
+# ----------------------------
+# Config via environment
+# ----------------------------
+SHEET_ID = os.environ["SHEET_ID"]                # Google Sheet ID (from Secrets)
+GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]    # CSE API key (from Secrets)
+GOOGLE_CX_ID = os.environ["GOOGLE_CX_ID"]        # CSE CX ID (from Secrets)
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+# Optional: set a specific tab name. If None, uses the first sheet.
+WORKSHEET_NAME: Optional[str] = None
 
-      - name: Set up Google credentials
-        run: echo "$GOOGLE_CREDENTIALS_JSON" > credentials.json
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+# Column headers (must match your sheet exactly)
+HEADER_STATUS = "Status"
+HEADER_TOPIC = "Topic"
+HEADER_AI_LINKS = "AI Image Links"
 
-      - name: Run Loomvale bot
-        env:
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GOOGLE_CX_ID: ${{ secrets.GOOGLE_CX_ID }}
-        run: python loomvale_sheet_bot.py
+# Behavior
+MAX_ROWS_PER_RUN = 100          # safety cap
+RETRY_COUNT = 3                 # for transient API errors
+PER_QUERY_SLEEP_SECONDS = 0.8   # be gentle to CSE
+WRITE_SLEEP_SECONDS = 0.2       # small delay between writes
+
+
+# ----------------------------
+# Google Sheets helpers
+# ----------------------------
+def get_ws():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not creds_path or not os.path.exists(creds_path):
+        raise RuntimeError(
+            "GOOGLE_APPLICATION_CREDENTIALS must point to the service account JSON file."
+        )
+    creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(SHEET_ID)
+    return sh.worksheet(WORKSHEET_NAME) if WORKSHEET_NAME else sh.sheet1
+
+
+def header_map(ws) -> dict:
+    headers = ws.row_values(1)
+    mapping = {h.strip(): i + 1 for i, h in enumerate(headers)}
+    for required in [HEADER_STATUS, HEADER_TOPIC, HEADER_AI_LINKS]:
+        if required not in mapping:
+            raise RuntimeError(
+                f"Header '{required}' not found. "
+                f"Found: {list(mapping.keys())}. "
+                "Fix header text or adjust constants."
+            )
+    return mapping
+
+
+# ----------------------------
+# Image search via Google CSE
+# ----------------------------
+def find_top3_images(query: str, api_key: str, cx: str) -> List[str]:
+    """Return up to 3 unique image URLs."""
+    service = build("customsearch", "v1", developerKey=api_key)
+    for attempt in range(RETRY_COUNT):
+        try:
+            resp = service.cse().list(
+                q=query,
+                cx=cx,
+                searchType="image",
+                num=10,
+                safe="active",
+            ).execute()
+            items = resp.get("items", []) or []
+            seen, links = set(), []
+            for it in items:
+                link = it.get("link")
+                if link and link not in seen:
+                    seen.add(link)
+                    links.append(link)
+                if len(links) == 3:
+                    break
+            return links
+        except HttpError as e:
+            if e.resp.status in (429, 500, 503):
+                time.sleep(1.5 + attempt)
+                continue
+            raise
+        except Exception:
+            if attempt == RETRY_COUNT - 1:
+                raise
+            time.sleep(1 + attempt)
+    return []
+
+
+def strip_diacritics(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c)
+    )
+
+
+# ----------------------------
+# Core logic
+# ----------------------------
+def process_sheet():
+    ws = get_ws()
+    mapping = header_map(ws)
+
+    status_col = mapping[HEADER_STATUS]
+    topic_col = mapping[HEADER_TOPIC]
+    links_col = mapping[HEADER_AI_LINKS]
+
+    # Read all rows (bounded by MAX_ROWS_PER_RUN once filtered)
+    all_values = ws.get_all_values()
+    rows = all_values[1:]  # skip header
+
+    updated = 0
+    for idx, row in enumerate(rows, start=2):  # sheet row index begins at 2
+        try:
+            status = (row[status_col - 1] if len(row) >= status_col else "").strip()
+            topic = (row[topic_col - 1] if len(row) >= topic_col else "").strip()
+            existing_links = (row[links_col - 1] if len(row) >= links_col else "").strip()
+
+            if status != "Ready":
+                continue
+            if existing_links:
+                # Already populated, skip to avoid overwriting
+                continue
+            if not topic:
+                continue
+
+            # Build query variants
+            queries = [
+                f"{topic} key visual",
+                f"{topic} poster",
+                f"{topic} official visual",
+                strip_diacritics(topic),
+            ]
+
+            links: List[str] = []
+            for q in queries:
+                time.sleep(PER_QUERY_SLEEP_SECONDS)
+                links = find_top3_images(q, GOOGLE_API_KEY, GOOGLE_CX_ID)
+                if len(links) >= 3:
+                    break
+
+            if not links:
+                print(f"⚠️  No images found for row {idx}: {topic}")
+                continue
+
+            value = ", ".join(links[:3])
+            ws.update_cell(idx, links_col, value)
+            updated += 1
+            print(f"✅ Row {idx} | {topic} → {value}")
+            time.sleep(WRITE_SLEEP_SECONDS)
+
+            if updated >= MAX_ROWS_PER_RUN:
+                print(f"ℹ️ Reached MAX_ROWS_PER_RUN={MAX_ROWS_PER_RUN}. Stopping.")
+                break
+
+        except Exception as e:
+            print(f"❌ Error on row {idx}: {e}")
+
+    print(f"Done. Updated rows: {updated}")
+
+
+if __name__ == "__main__":
+    process_sheet()
