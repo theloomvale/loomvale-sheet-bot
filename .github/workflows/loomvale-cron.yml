@@ -5,31 +5,43 @@ on:
     - cron: "0 9 */2 * *"   # every 2 days @ 09:00 UTC
   workflow_dispatch: {}
 
+concurrency:
+  group: loomvale-cron
+  cancel-in-progress: true
+
 jobs:
   update-sheet:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      SHEET_ID: ${{ secrets.SHEET_ID }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GOOGLE_CX_ID: ${{ secrets.GOOGLE_CX_ID }}
+      GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/credentials.json
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: "pip"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Set up Google credentials
-        # Use printf to avoid trailing newline issues
+        # Write the JSON secret to credentials.json safely
         run: printf '%s' "$GOOGLE_CREDENTIALS_JSON" > credentials.json
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
 
       - name: Run Loomvale bot
-        env:
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GOOGLE_CX_ID: ${{ secrets.GOOGLE_CX_ID }}
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/credentials.json
-        run: python loomvale_sheet_bot.py
+        run: python -u loomvale_sheet_bot.py
