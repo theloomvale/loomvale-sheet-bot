@@ -20,7 +20,17 @@ WORKSHEET_NAME: Optional[str] = os.environ.get("WORKSHEET_NAME","Pipeline")
 H_STATUS,H_TOPIC,H_SOURCE,H_PROMPT,H_LINKS,H_TONE,H_CAPTION,H_HASHTAG,H_FINAL,H_AI_LINKS,H_ASSIST=(
 "Status","Topic","ImageSource","ImagePrompt","SourceLinks","Tone","CaptionPrompt","HashtagPrompt","FinalImage","AI Image Links","Assistant")
 
-PREFERRED_DOMAINS={"crunchyroll.com","ghibli.jp","aniplex.co.jp","toho.co.jp","imdb.com","posterdb.com","theposterdb.com","toei.co.jp","viz.com","animatetimes.com","mantan-web.jp","dengekionline.com","kadokawa.co.jp","fuji.tv","bandainamcoent.co.jp","netflix.com","horrorsociety.com"}
+# For link rows: prefer official/reliable domains
+PREFERRED_DOMAINS = {
+    "crunchyroll.com", "ghibli.jp", "aniplex.co.jp", "toho.co.jp", "imdb.com",
+    "netflix.com", "fuji.tv", "kadokawa.co.jp", "sega.jp", "bandainamcoent.co.jp",
+    "posterdb.com", "theposterdb.com", "horrorsociety.com", "toei.co.jp",
+    "viz.com", "animatetimes.com", "mantan-web.jp", "dengekionline.com",
+    # ✅ Newly added trusted image hosts
+    "media-amazon.com",    # IMDb images (m.media-amazon.com)
+    "storyblok.com",       # official press/CDN host
+    "myanimelist.net"      # optional, reliable anime visuals
+}
 EXT_RE=re.compile(r"\.(jpg|jpeg|png|webp)(?:$|\?)",re.IGNORECASE)
 BRAND_COLORS=["Mizu blue","Soft sage green","War lantern orange","Karma beige","Charcoal gray"]
 
