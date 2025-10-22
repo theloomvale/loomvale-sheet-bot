@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
+# Loomvale Sheet Bot — final
 import os
 import io
+import re
 import time
 import json
+import base64
 import random
-import re
-from typing import List, Dict, Optional
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -29,9 +31,12 @@ GOOGLE_CX_ID = os.environ.get("GOOGLE_CX_ID", "")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 HF_MODEL = os.environ.get("HF_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
 HF_AUTOGEN = os.environ.get("HF_AUTOGEN", "false").lower() == "true"  # generate now or defer
-MAX_ROWS_PER_RUN = int(os.environ.get("MAX_ROWS_PER_RUN", "5"))
 
-# Output image target size (divisible by 8; portrait)
+# Limits & pacing
+MAX_ROWS_PER_RUN = int(os.environ.get("MAX_ROWS_PER_RUN", "5"))
+WRITE_SLEEP = float(os.environ.get("WRITE_SLEEP", "0.25"))
+
+# SDXL defaults (portrait; divisible by 8)
 SDXL_W, SDXL_H = 1024, 1344
 SDXL_STEPS = 28
 SDXL_CFG = 6.5
@@ -43,29 +48,24 @@ NEGATIVE_PROMPT = (
 # =========================
 # COLUMN HEADERS (canonical)
 # =========================
-H_STATUS = "Status"
-H_TOPIC = "Topic"
-H_SOURCE = "ImageSource"
-H_LINKS = "SourceLinks"
-H_AMBIENCE = "ImagePrompt_Ambience"
-H_SCENES = "ImagePrompt_Scenes"
-H_AI_IMAGES = "AI generated images"       # new (replaces old "AI Image Links")
-H_TONE = "Tone"
-H_CAPHASH = "Caption+Hashtags Prompt"     # merged column name
-H_ASSIST = "Assistant"
+H_STATUS  = "Status"
+H_TOPIC   = "Topic"
+H_SOURCE  = "ImageSource"
+H_LINKS   = "SourceLinks"
+H_AMBIENCE= "ImagePrompt_Ambience"
+H_SCENES  = "ImagePrompt_Scenes"
+H_AI_URLS = "AI generated images"         # column G
+H_TONE    = "Tone"
+H_CAPHASH = "Caption+Hashtags Prompt"     # merged column I
+H_ASSIST  = "Assistant"
 
-# Only these are writable:
-ALLOWED_WRITE_COLS = {
-    H_LINKS, H_AMBIENCE, H_SCENES, H_TONE, H_CAPHASH, H_AI_IMAGES, H_ASSIST
-}
-
-# Preferred image domains
+# Domains preference for links
 PREFERRED_DOMAINS = {
     "crunchyroll.com", "ghibli.jp", "aniplex.co.jp", "toho.co.jp", "imdb.com",
     "media-amazon.com", "storyblok.com", "theposterdb.com", "viz.com",
     "myanimelist.net", "netflix.com", "bandainamcoent.co.jp", "fuji.tv",
     "toei-anim.co.jp", "kadokawa.co.jp", "shueisha.co.jp", "avex.com", "aniverse-mag.com",
-    "eiga.com", "natalie.mu", "natalie.mu/comic", "animenewsnetwork.com",
+    "eiga.com", "natalie.mu", "animenewsnetwork.com",
     # allowed fallback:
     "pinterest.com", "pinimg.com"
 }
@@ -73,24 +73,18 @@ IMG_EXT_RE = re.compile(r"\.(jpg|jpeg|png|webp)(?:$|\?)", re.IGNORECASE)
 
 BRAND_COLORS = ["Mizu blue", "Soft sage green", "War lantern orange", "Karma beige", "Charcoal gray"]
 
-
 # =========================
 # GOOGLE HELPERS
 # =========================
 def _load_sa_creds():
     raw = GOOGLE_CREDENTIALS_JSON
-    if not raw.startswith("{"):
-        raw = json.loads(raw)  # allow base64 step elsewhere if you ever add it
-        return Credentials.from_service_account_info(raw, scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ])
-    info = json.loads(GOOGLE_CREDENTIALS_JSON)
+    if not raw.strip().startswith("{"):
+        raw = base64.b64decode(raw).decode("utf-8")
+    info = json.loads(raw)
     return Credentials.from_service_account_info(info, scopes=[
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ])
-
 
 def get_ws():
     creds = _load_sa_creds()
@@ -103,45 +97,32 @@ def get_ws():
             pass
     return sh.sheet1
 
-
 def header_map(ws) -> dict:
-    """
-    Build a header index map, accepting several legacy/variant names and
-    normalizing them to the canonical constants defined above.
-    """
+    """Map canonical header names to 1-based indices, accepting variants."""
     raw_headers = [h.strip() for h in ws.row_values(1)]
-
-    # Case/spacing insensitive lookup table for the sheet's actual headers
     norm_to_actual = {h.lower().replace(" ", "").replace("_", ""): h for h in raw_headers}
 
     def find(*aliases):
-        """
-        Return the actual header name from any of the provided alias strings.
-        Aliases are matched case-insensitively with spaces/underscores removed.
-        """
         for alias in aliases:
-            key = alias.lower().replace(" ", "").replace("_", "")
-            if key in norm_to_actual:
-                return norm_to_actual[key]
+            k = alias.lower().replace(" ", "").replace("_", "")
+            if k in norm_to_actual:
+                return norm_to_actual[k]
         return None
 
-    # Map canonical -> actual in the sheet, trying multiple aliases where needed
     mapping_actual = {
-        H_STATUS:  find("Status"),
-        H_TOPIC:   find("Topic"),
-        H_SOURCE:  find("ImageSource", "Image Source"),
-        H_LINKS:   find("SourceLinks", "Source Links"),
-        H_AMBIENCE:find("ImagePrompt_Ambience", "ImagePrompt Ambience", "Image Prompt Ambience"),
-        H_SCENES:  find("ImagePrompt_Scenes", "ImagePrompt Scenes", "Image Prompt Scenes"),
-        H_AI_IMAGES: find("AI generated images", "AI Image Links", "AI images", "AI Images"),
-        H_TONE:    find("Tone"),
-        H_CAPHASH: find("Caption+Hashtags Prompt", "Caption Hashtags Prompt", "CaptionPrompt+HashtagPrompt", "Caption&Hashtags Prompt"),
-        H_ASSIST:  find("Assistant"),
+        H_STATUS:   find("Status"),
+        H_TOPIC:    find("Topic"),
+        H_SOURCE:   find("ImageSource", "Image Source"),
+        H_LINKS:    find("SourceLinks", "Source Links"),
+        H_AMBIENCE: find("ImagePrompt_Ambience", "ImagePrompt Ambience", "Image Prompt Ambience"),
+        H_SCENES:   find("ImagePrompt_Scenes", "ImagePrompt Scenes", "Image Prompt Scenes"),
+        H_AI_URLS:  find("AI generated images", "AI Image Links", "AI images", "AI Images"),
+        H_TONE:     find("Tone"),
+        H_CAPHASH:  find("Caption+Hashtags Prompt", "Caption Hashtags Prompt", "CaptionPrompt+HashtagPrompt", "Caption&Hashtags Prompt"),
+        H_ASSIST:   find("Assistant"),
     }
 
-    # Build the index map (1-based column positions)
-    index_map = {}
-    missing = []
+    index_map, missing = {}, []
     for canonical, actual in mapping_actual.items():
         if actual is None:
             missing.append(canonical)
@@ -149,30 +130,22 @@ def header_map(ws) -> dict:
             index_map[canonical] = raw_headers.index(actual) + 1
 
     if missing:
-        raise RuntimeError(
-            f"Missing header(s): {missing}. Found: {raw_headers}"
-        )
-
+        raise RuntimeError(f"Missing header(s): {missing}. Found: {raw_headers}")
     return index_map
-
 
 def drive_service():
     creds = _load_sa_creds()
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
-
 def upload_image_to_drive(image_bytes: bytes, name: str) -> str:
-    """Uploads bytes to Drive and returns a shareable link."""
+    """Upload bytes to Drive and return a public link."""
     svc = drive_service()
-    file_metadata = {"name": name, "mimeType": "image/png"}
+    meta = {"name": name, "mimeType": "image/png"}
     media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/png", resumable=False)
-    f = svc.files().create(body=file_metadata, media_body=media, fields="id, webViewLink, webContentLink").execute()
+    f = svc.files().create(body=meta, media_body=media, fields="id, webViewLink, webContentLink").execute()
     file_id = f["id"]
-    # make public read
     svc.permissions().create(fileId=file_id, body={"type": "anyone", "role": "reader"}).execute()
-    # Prefer webContentLink for direct download; webView is preview
     return f.get("webContentLink") or f.get("webViewLink")
-
 
 # =========================
 # IMAGE SEARCH (Link rows)
@@ -180,12 +153,9 @@ def upload_image_to_drive(image_bytes: bytes, name: str) -> str:
 def _host_allowed(url: str) -> bool:
     try:
         host = urlparse(url).netloc.lower().split(":")[0]
-        if any(host == d or host.endswith("." + d) for d in PREFERRED_DOMAINS):
-            return True
+        return any(host == d or host.endswith("." + d) for d in PREFERRED_DOMAINS)
     except Exception:
         return False
-    return False
-
 
 def _portrait(image_obj: dict) -> bool:
     im = image_obj.get("image") or {}
@@ -194,7 +164,6 @@ def _portrait(image_obj: dict) -> bool:
         return h > w and h >= 800
     except Exception:
         return False
-
 
 def search_poster_links(topic: str, max_results=3) -> List[str]:
     if not (GOOGLE_API_KEY and GOOGLE_CX_ID):
@@ -209,10 +178,8 @@ def search_poster_links(topic: str, max_results=3) -> List[str]:
         try:
             r = requests.get(
                 "https://www.googleapis.com/customsearch/v1",
-                params={
-                    "q": q, "cx": GOOGLE_CX_ID, "key": GOOGLE_API_KEY,
-                    "searchType": "image", "num": 10, "safe": "active"
-                },
+                params={"q": q, "cx": GOOGLE_CX_ID, "key": GOOGLE_API_KEY,
+                        "searchType": "image", "num": 10, "safe": "active"},
                 timeout=20
             )
             items = (r.json() or {}).get("items", []) or []
@@ -226,21 +193,18 @@ def search_poster_links(topic: str, max_results=3) -> List[str]:
                     continue
                 if not _portrait(it):
                     continue
-                out.append(link)
-                seen.add(link)
+                out.append(link); seen.add(link)
                 if len(out) >= max_results:
                     return out
         except Exception:
             continue
     return out
 
-
 # =========================
-# AI PROMPTING HELPERS
+# PROMPT HELPERS
 # =========================
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip().lower())
-
 
 def archetype(topic: str) -> str:
     t = _norm(topic)
@@ -256,7 +220,6 @@ def archetype(topic: str) -> str:
         return "tech"
     return "cozy"
 
-
 def infer_tone(topic: str) -> str:
     arc = archetype(topic)
     if arc == "cozy":
@@ -271,13 +234,11 @@ def infer_tone(topic: str) -> str:
         return "Informative, cozy-tech, empathic"
     return "Cozy, empathic"
 
-
 def deterministic_color(topic: str) -> str:
     idx = abs(hash(_norm(topic))) % len(BRAND_COLORS)
     return BRAND_COLORS[idx]
 
-
-def ambience_prompt(topic: str) -> str:
+def build_ambience_block(topic: str) -> str:
     color = deterministic_color(topic)
     arc = archetype(topic)
     style_hint = "anime" if arc in ("cozy", "fantasy", "urban", "romance") else "realistic"
@@ -289,8 +250,7 @@ def ambience_prompt(topic: str) -> str:
         f"Primary rendering hint: {style_hint}."
     )
 
-
-def scene_block(topic: str) -> str:
+def build_scenes_block(topic: str) -> str:
     arc = archetype(topic)
     if arc == "cozy":
         scenes = [
@@ -357,7 +317,7 @@ def scene_block(topic: str) -> str:
             ("Night shift", "LED strips; tea tin; rubber duck debugger",
              '(handwritten gray) solved by moonlight.')
         ]
-    # Format 5 scenes
+
     lines = []
     for i, (title, visual, text) in enumerate(scenes, 1):
         lines.append(
@@ -368,16 +328,14 @@ def scene_block(topic: str) -> str:
         )
     return "\n\n".join(lines)
 
-
-def caption_hashtag_prompt(topic: str, tone: str) -> str:
+def make_caption_prompt(topic: str, tone: str) -> str:
     return (
         f"Write an Instagram caption about: {topic}. Tone: {tone}. "
         "Use Loomvale’s cozy, cinematic, empathic voice. Begin with a short emotional hook, "
-        "then two to three concise sentences, and end with a subtle CTA like “save for later.” "
-        "Maximum 600 characters, no more than two emojis. "
-        "Also generate 10 hashtags, each with # and space-separated, topical & aesthetic."
+        "then 2–3 concise sentences, end with a subtle call to action (e.g., save for later). "
+        "Maximum 600 characters, ≤2 emojis. Also generate 10 hashtags about the topic; "
+        "include a # before every word and put a single space between each hashtag."
     )
-
 
 # =========================
 # HUGGING FACE GENERATION
@@ -405,7 +363,6 @@ def sdxl_single(prompt: str, seed: Optional[int] = None) -> Optional[bytes]:
         return r.content
     return None
 
-
 def generate_n_images_to_drive(prompt: str, topic: str, n: int = 5) -> List[str]:
     urls = []
     for i in range(n):
@@ -416,26 +373,57 @@ def generate_n_images_to_drive(prompt: str, topic: str, n: int = 5) -> List[str]
         urls.append(link)
     return urls
 
-
 # =========================
-# IDEA SEEDS
+# IDEAS / SEEDING
 # =========================
 SEED_TOPICS = [
-    "Midnight Code Cafe", "Pastel Workspace Flatlay", "Lofi Cat Nap",
-    "Rain City Crosswalk", "Shibuya Night Train", "Notebook Therapy Desk",
-    "Forest Shrine at Dawn", "Pocket Walkman Vibes", "Ghibli-esque Tea Break",
-    "Arcade Neon Memory"
+    "Midnight Lofi Desk — retro cassette glow",
+    "Neon Rain Crosswalk — cozy umbrellas in Tokyo",
+    "Studio Ghibli-style Forest Spirits at Dawn",
+    "Cozy Cat Nap on Sketchbooks — warm lamplight",
+    "Retro Arcade Memories — pixel glow & film grain",
+    "Shibuya Alley in the Mist — reflections & foot traffic",
+    "Quiet Train Window Monologue — passing city lights",
+    "Blue-hour Shrine — paper lanterns, wind, calm",
+    "Kintsugi Poster Study — gold repair on charcoal",
+    "Indie Designer Workspace — soft sage and notebooks",
 ]
 
-
-def new_topic() -> str:
-    return random.choice(SEED_TOPICS)
-
+def is_cozy_archetype(t: str) -> bool:
+    t = _norm(t)
+    return any(k in t for k in ["lofi", "desk", "room", "nap", "cozy", "studio", "cat", "rain", "forest", "lantern"])
 
 def choose_source_for_topic(topic: str) -> str:
-    # 60% AI, 40% Link
-    return "AI" if random.random() < 0.6 else "Link"
+    return "AI" if is_cozy_archetype(topic) else "Link"
 
+def seed_row_values(topic: str, image_source: str) -> list:
+    tone = infer_tone(topic)
+    ambience = "" if image_source.lower() == "link" else build_ambience_block(topic)
+    scenes   = "" if image_source.lower() == "link" else build_scenes_block(topic)
+    return [
+        "Ready",                     # A Status
+        topic,                       # B Topic
+        image_source,                # C ImageSource
+        "",                          # D SourceLinks
+        ambience,                    # E ImagePrompt_Ambience
+        scenes,                      # F ImagePrompt_Scenes
+        "",                          # G AI generated images
+        tone,                        # H Tone
+        make_caption_prompt(topic, tone),  # I Caption+Hashtags Prompt
+        "To do",                     # J Assistant
+    ]
+
+def append_new_idea_rows(ws, hdr: dict, n: int = 5):
+    added = 0
+    for topic in SEED_TOPICS:
+        if added >= n:
+            break
+        src = choose_source_for_topic(topic)
+        ws.append_row(seed_row_values(topic, src), value_input_option="RAW")
+        added += 1
+        time.sleep(WRITE_SLEEP)
+    if added:
+        print(f"🆕 Seeded {added} idea rows.")
 
 # =========================
 # MAIN PROCESS
@@ -445,139 +433,132 @@ def process():
     hdr = header_map(ws)
     rows = ws.get_all_values()[1:]  # skip header
 
+    # If sheet has no data, seed 5 rows so the pass has work to do
+    if not rows:
+        append_new_idea_rows(ws, hdr, n=5)
+        rows = ws.get_all_values()[1:]
+
     updated = 0
 
     for r_idx, row in enumerate(rows, start=2):
         try:
-            status = (row[hdr[H_STATUS] - 1] if len(row) >= hdr[H_STATUS] else "").strip()
-            topic = (row[hdr[H_TOPIC] - 1] if len(row) >= hdr[H_TOPIC] else "").strip()
-            source_raw = (row[hdr[H_SOURCE] - 1] if len(row) >= hdr[H_SOURCE] else "")
-            source = source_raw.strip().lower()
-            assistant = (row[hdr[H_ASSIST] - 1] if len(row) >= hdr[H_ASSIST] else "").strip()
+            status    = (row[hdr[H_STATUS]  - 1] if len(row) >= hdr[H_STATUS]  else "").strip()
+            topic     = (row[hdr[H_TOPIC]   - 1] if len(row) >= hdr[H_TOPIC]   else "").strip()
+            sourceRaw = (row[hdr[H_SOURCE]  - 1] if len(row) >= hdr[H_SOURCE]  else "")
+            source    = sourceRaw.strip().lower()
+            assistant = (row[hdr[H_ASSIST]  - 1] if len(row) >= hdr[H_ASSIST]  else "").strip()
 
-            # If everything is empty → create a full idea
-            fully_empty = all(not (row[hdr[c]-1].strip() if len(row) >= hdr[c] else "") for c in
-                              [H_TOPIC, H_SOURCE, H_LINKS, H_AMBIENCE, H_SCENES, H_AI_URLS, H_TONE, H_CAPTAG, H_ASSIST])
-
-            if fully_empty or status == "" or status.lower() == "ready":
-                if not topic:
-                    topic = new_topic()
-                    ws.update_cell(r_idx, hdr[H_TOPIC], topic)
-                if not source:
-                    source = choose_source_for_topic(topic).lower()
-                    ws.update_cell(r_idx, hdr[H_SOURCE], source.capitalize())
-                if not status:
-                    ws.update_cell(r_idx, hdr[H_STATUS], "Ready")
-
-            # Do not re-touch Done rows
+            # Do not re-touch completed rows
             if assistant.lower() == "done":
                 continue
 
+            # If row is marked Ready or blank, normalize topic/source/status
+            if not topic:
+                # create a topic on the fly from pool
+                topic = random.choice(SEED_TOPICS)
+                ws.update_cell(r_idx, hdr[H_TOPIC], topic); time.sleep(WRITE_SLEEP)
+            if not source:
+                auto = choose_source_for_topic(topic)
+                ws.update_cell(r_idx, hdr[H_SOURCE], auto); time.sleep(WRITE_SLEEP)
+                source = auto.lower()
+            if not status:
+                ws.update_cell(r_idx, hdr[H_STATUS], "Ready"); time.sleep(WRITE_SLEEP)
+
             if source == "link":
-                # Fill links; leave E/F/G empty
+                tone = infer_tone(topic)
+                ws.update_cell(r_idx, hdr[H_TONE], tone); time.sleep(WRITE_SLEEP)
+                ws.update_cell(r_idx, hdr[H_CAPHASH], make_caption_prompt(topic, tone)); time.sleep(WRITE_SLEEP)
+
                 links = search_poster_links(topic)
                 if links:
-                    ws.update_cell(r_idx, hdr[H_LINKS], ", ".join(links))
-                    ws.update_cell(r_idx, hdr[H_TONE], infer_tone(topic))
-                    ws.update_cell(r_idx, hdr[H_CAPTAG], caption_hashtag_prompt(topic, infer_tone(topic)))
-                    ws.update_cell(r_idx, hdr[H_ASSIST], "Done")
+                    ws.update_cell(r_idx, hdr[H_LINKS], ", ".join(links)); time.sleep(WRITE_SLEEP)
+                    ws.update_cell(r_idx, hdr[H_ASSIST], "Done"); time.sleep(WRITE_SLEEP)
                 else:
-                    ws.update_cell(r_idx, hdr[H_ASSIST], "Couldn't find images")
+                    ws.update_cell(r_idx, hdr[H_ASSIST], "Couldn't find images"); time.sleep(WRITE_SLEEP)
 
                 updated += 1
 
             elif source == "ai":
-                # Always write ambience/scenes/tone/caption prompt
-                amb = ambience_prompt(topic)
-                scn = scene_block(topic)
                 tone = infer_tone(topic)
+                ws.update_cell(r_idx, hdr[H_TONE], tone); time.sleep(WRITE_SLEEP)
+                ws.update_cell(r_idx, hdr[H_CAPHASH], make_caption_prompt(topic, tone)); time.sleep(WRITE_SLEEP)
 
-                ws.update_cell(r_idx, hdr[H_AMBIENCE], amb)
-                ws.update_cell(r_idx, hdr[H_SCENES], scn)
-                ws.update_cell(r_idx, hdr[H_TONE], tone)
-                ws.update_cell(r_idx, hdr[H_CAPTAG], caption_hashtag_prompt(topic, tone))
+                amb = build_ambience_block(topic)
+                scn = build_scenes_block(topic)
+                ws.update_cell(r_idx, hdr[H_AMBIENCE], amb); time.sleep(WRITE_SLEEP)
+                ws.update_cell(r_idx, hdr[H_SCENES], scn); time.sleep(WRITE_SLEEP)
 
                 if HF_AUTOGEN:
-                    # Build one combined prompt for SDXL (ambience + the five scenes)
                     prompt = f"{amb}\n\n{scn}"
                     urls = generate_n_images_to_drive(prompt, topic, n=5)
                     if urls:
-                        ws.update_cell(r_idx, hdr[H_AI_URLS], ", ".join(urls))
-                        ws.update_cell(r_idx, hdr[H_ASSIST], "Done")
+                        ws.update_cell(r_idx, hdr[H_AI_URLS], ", ".join(urls)); time.sleep(WRITE_SLEEP)
+                        ws.update_cell(r_idx, hdr[H_ASSIST], "Done"); time.sleep(WRITE_SLEEP)
                     else:
-                        ws.update_cell(r_idx, hdr[H_ASSIST], "Generate Images")
+                        ws.update_cell(r_idx, hdr[H_ASSIST], "Generate Images"); time.sleep(WRITE_SLEEP)
                 else:
-                    ws.update_cell(r_idx, hdr[H_ASSIST], "Generate Images")
+                    ws.update_cell(r_idx, hdr[H_ASSIST], "Generate Images"); time.sleep(WRITE_SLEEP)
 
                 updated += 1
 
-            else:
-                # unknown source: skip
-                pass
+            # else: unknown/other → skip
 
             if updated >= MAX_ROWS_PER_RUN:
-                print(f"Reached MAX_ROWS_PER_RUN={MAX_ROWS_PER_RUN}")
+                print(f"ℹ️ Reached MAX_ROWS_PER_RUN={MAX_ROWS_PER_RUN}.")
                 break
 
-            time.sleep(0.25)
-
         except Exception as e:
-            print(f"Row {r_idx} error: {e}")
+            print(f"❌ Row {r_idx} error: {e}")
 
     print(f"Done. Updated: {updated}")
-
 
 # ================
 # HF FOLLOW-UP WORKER
 # ================
 def generate_pending_images():
-    """Run by the 30-min workflow: picks rows with Assistant='Generate Images' and fills G with new URLs."""
+    """Second-pass job: fills G with URLs for rows where Assistant='Generate Images' (AI only)."""
     if not HF_TOKEN:
         print("HF_TOKEN not set; skipping.")
         return
 
     ws = get_ws()
     hdr = header_map(ws)
-    rows = ws.get_all_values()[1:]  # skip header
+    rows = ws.get_all_values()[1:]
 
     done = 0
     for r_idx, row in enumerate(rows, start=2):
         try:
             assistant = (row[hdr[H_ASSIST]-1].strip() if len(row) >= hdr[H_ASSIST] else "")
-            source = (row[hdr[H_SOURCE]-1].strip().lower() if len(row) >= hdr[H_SOURCE] else "")
-            topic = (row[hdr[H_TOPIC]-1].strip() if len(row) >= hdr[H_TOPIC] else "")
+            source    = (row[hdr[H_SOURCE]-1].strip().lower() if len(row) >= hdr[H_SOURCE] else "")
+            topic     = (row[hdr[H_TOPIC]-1].strip() if len(row) >= hdr[H_TOPIC] else "")
             if assistant != "Generate Images" or source != "ai" or not topic:
                 continue
 
             amb = (row[hdr[H_AMBIENCE]-1] if len(row) >= hdr[H_AMBIENCE] else "")
-            scn = (row[hdr[H_SCENES]-1] if len(row) >= hdr[H_SCENES] else "")
+            scn = (row[hdr[H_SCENES]-1]  if len(row) >= hdr[H_SCENES]   else "")
             if not amb or not scn:
-                # nothing to generate from
-                ws.update_cell(r_idx, hdr[H_ASSIST], "Needs prompts")
+                ws.update_cell(r_idx, hdr[H_ASSIST], "Needs prompts"); time.sleep(WRITE_SLEEP)
                 continue
 
             prompt = f"{amb}\n\n{scn}"
             urls = generate_n_images_to_drive(prompt, topic, n=5)
             if urls:
-                ws.update_cell(r_idx, hdr[H_AI_URLS], ", ".join(urls))
-                ws.update_cell(r_idx, hdr[H_ASSIST], "Done")
+                ws.update_cell(r_idx, hdr[H_AI_URLS], ", ".join(urls)); time.sleep(WRITE_SLEEP)
+                ws.update_cell(r_idx, hdr[H_ASSIST], "Done"); time.sleep(WRITE_SLEEP)
                 done += 1
             else:
-                ws.update_cell(r_idx, hdr[H_ASSIST], "HF failed")
-
-            time.sleep(0.25)
+                ws.update_cell(r_idx, hdr[H_ASSIST], "HF failed"); time.sleep(WRITE_SLEEP)
 
             if done >= MAX_ROWS_PER_RUN:
                 break
 
         except Exception as e:
-            print(f"Pending gen row {r_idx} error: {e}")
+            print(f"❌ Pending gen row {r_idx} error: {e}")
 
     print(f"Image generation filled: {done}")
 
-
 if __name__ == "__main__":
-    mode = os.environ.get("MODE", "process")
+    mode = os.environ.get("MODE", "process").strip().lower()
     if mode == "generate":
         generate_pending_images()
     else:
