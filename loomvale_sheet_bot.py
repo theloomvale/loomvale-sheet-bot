@@ -40,20 +40,24 @@ NEGATIVE_PROMPT = (
     "deformed, extra fingers, extra limbs, bad hands, bad anatomy, duplicate, worst quality"
 )
 
-# Headers (exactly as in the sheet)
+# =========================
+# COLUMN HEADERS (canonical)
+# =========================
 H_STATUS = "Status"
 H_TOPIC = "Topic"
 H_SOURCE = "ImageSource"
 H_LINKS = "SourceLinks"
 H_AMBIENCE = "ImagePrompt_Ambience"
 H_SCENES = "ImagePrompt_Scenes"
-H_AI_URLS = "AI generated images"
+H_AI_IMAGES = "AI generated images"       # new (replaces old "AI Image Links")
 H_TONE = "Tone"
-H_CAPTAG = "Caption+Hashtag Prompt"
+H_CAPHASH = "Caption+Hashtags Prompt"     # merged column name
 H_ASSIST = "Assistant"
 
-# Allowed write columns
-ALLOWED_WRITE = {H_LINKS, H_AMBIENCE, H_SCENES, H_TONE, H_CAPTAG, H_AI_URLS, H_ASSIST}
+# Only these are writable:
+ALLOWED_WRITE_COLS = {
+    H_LINKS, H_AMBIENCE, H_SCENES, H_TONE, H_CAPHASH, H_AI_IMAGES, H_ASSIST
+}
 
 # Preferred image domains
 PREFERRED_DOMAINS = {
@@ -100,13 +104,56 @@ def get_ws():
     return sh.sheet1
 
 
-def header_map(ws) -> Dict[str, int]:
-    headers = [h.strip() for h in ws.row_values(1)]
-    mapping = {h: i + 1 for i, h in enumerate(headers)}
-    for name in [H_STATUS, H_TOPIC, H_SOURCE, H_LINKS, H_AMBIENCE, H_SCENES, H_AI_URLS, H_TONE, H_CAPTAG, H_ASSIST]:
-        if name not in mapping:
-            raise RuntimeError(f"Missing header '{name}'. Found: {headers}")
-    return mapping
+def header_map(ws) -> dict:
+    """
+    Build a header index map, accepting several legacy/variant names and
+    normalizing them to the canonical constants defined above.
+    """
+    raw_headers = [h.strip() for h in ws.row_values(1)]
+
+    # Case/spacing insensitive lookup table for the sheet's actual headers
+    norm_to_actual = {h.lower().replace(" ", "").replace("_", ""): h for h in raw_headers}
+
+    def find(*aliases):
+        """
+        Return the actual header name from any of the provided alias strings.
+        Aliases are matched case-insensitively with spaces/underscores removed.
+        """
+        for alias in aliases:
+            key = alias.lower().replace(" ", "").replace("_", "")
+            if key in norm_to_actual:
+                return norm_to_actual[key]
+        return None
+
+    # Map canonical -> actual in the sheet, trying multiple aliases where needed
+    mapping_actual = {
+        H_STATUS:  find("Status"),
+        H_TOPIC:   find("Topic"),
+        H_SOURCE:  find("ImageSource", "Image Source"),
+        H_LINKS:   find("SourceLinks", "Source Links"),
+        H_AMBIENCE:find("ImagePrompt_Ambience", "ImagePrompt Ambience", "Image Prompt Ambience"),
+        H_SCENES:  find("ImagePrompt_Scenes", "ImagePrompt Scenes", "Image Prompt Scenes"),
+        H_AI_IMAGES: find("AI generated images", "AI Image Links", "AI images", "AI Images"),
+        H_TONE:    find("Tone"),
+        H_CAPHASH: find("Caption+Hashtags Prompt", "Caption Hashtags Prompt", "CaptionPrompt+HashtagPrompt", "Caption&Hashtags Prompt"),
+        H_ASSIST:  find("Assistant"),
+    }
+
+    # Build the index map (1-based column positions)
+    index_map = {}
+    missing = []
+    for canonical, actual in mapping_actual.items():
+        if actual is None:
+            missing.append(canonical)
+        else:
+            index_map[canonical] = raw_headers.index(actual) + 1
+
+    if missing:
+        raise RuntimeError(
+            f"Missing header(s): {missing}. Found: {raw_headers}"
+        )
+
+    return index_map
 
 
 def drive_service():
