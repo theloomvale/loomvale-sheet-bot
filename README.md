@@ -1,37 +1,35 @@
 # Loomvale Sheet Bot
 
-Automates the **Pipeline** Google Sheet:
+Cinematic, cozy, and organized. This bot keeps your **Google Sheet pipeline** filled with on-brand prompts, captions, and image links — and can generate **SDXL** images via Hugging Face.
 
-**Columns (A→J):**
+**Follow us on IG:** [@theloomvale](https://instagram.com/theloomvale)  
+**Get the Social App prompts pack:** [loomvale.gumroad.com/l/social-app](https://loomvale.gumroad.com/l/social-app)
 
-A Status | B Topic | C ImageSource | D SourceLinks | E ImagePrompt_Ambience | F ImagePrompt_Scenes | G AI generated images | H Tone | I Caption+Hashtags Prompt | J Assistant
+## Sheet layout (exact headers, row 1)
 
-## What it does
+A `Status` | B `Topic` | C `ImageSource` | D `SourceLinks` | E `ImagePrompt_Ambience` | F `ImagePrompt_Scenes` | G `AI generated images` | H `Tone` | I `Caption+Hashtag Prompt` | J `Assistant`
 
-- Processes up to **5 rows per run**.
-- If a row is **fully empty** (B..J), the bot **creates a new post idea**:
-  - 60% **AI** → fills E (Ambience) + F (5 Scenes), H (Tone), I (Caption+Hashtags), sets J = `Needs AI Images`, leaves D/G empty.
-  - 40% **Link** → finds up to 3 portrait poster URLs (D), fills H/I, sets J = `Done` (3 links) or `Couldn't find images`, leaves E/F/G empty.
-- For existing rows:
-  - **AI** → fills missing Ambience/Scenes/Caption prompt; sets J = `Needs AI Images`.
-  - **Link** → finds portrait URLs if missing; sets J accordingly; fills Tone & Caption prompt.
+- **Link** rows → fills D with 3 portrait URLs (official sources first), writes H + I, leaves E/F/G empty.
+- **AI** rows → fills E + F + H + I. If `HF_AUTOGEN=true`, also writes 5 drive URLs to G; otherwise sets J=`Generate Images` for the follow-up worker.
 
-## Setup
+## Secrets (Repo → Settings → Secrets and variables → Actions)
 
-### GitHub secrets
+- `SHEET_ID` (required)
+- `PIPELINE_TAB` (e.g., `Pipeline`) or leave empty to use the first sheet
+- `GOOGLE_CREDENTIALS_JSON` (service account JSON **content**)
+- `GOOGLE_API_KEY` + `GOOGLE_CX_ID` (optional; for Link rows, Google CSE image search)
+- `HF_TOKEN` (optional; for AI image generation)
+- `HF_MODEL` (optional; default `stabilityai/stable-diffusion-xl-base-1.0`)
+- `HF_AUTOGEN` (optional; `"true"` to generate inside the main run; default `"false"`)
 
-- `SHEET_ID` – your Google Sheet ID
-- `PIPELINE_TAB` – (optional) tab name, default `Pipeline`
-- `GOOGLE_CREDENTIALS_JSON` – service account JSON (raw or base64)
-- `GOOGLE_API_KEY` – Google Custom Search JSON API key
-- `GOOGLE_CX_ID` – Custom Search Engine ID (image search enabled, limited to your domains)
+Also share your Sheet with the **service account email** from your credentials as **Editor**.
 
-### Run
+## Workflows
 
-- Manual: **Actions → Loomvale Sheet Bot → Run workflow**
-- Auto: every **2 days @ 09:00 UTC** (see cron)
+- **Loomvale Bot** (`.github/workflows/loomvale-cron.yml`)  
+  Runs every **2 days at 09:00 UTC** (plus manual). Creates ideas, fills prompts, finds Link images, and — if enabled — generates AI images.
 
-### Notes
+- **Loomvale HF Image Worker** (`.github/workflows/loomvale-hf.yml`)  
+  Runs every **30 minutes**. Looks for rows with `Assistant = Generate Images` and fills G with 5 shareable Google Drive URLs. Sets `Assistant = Done`.
 
-- Portrait filter: vertical (h > w) and height ≥ 800, whitelisted/official domains preferred (Pinterest allowed as fallback).
-- `I` merges caption + hashtags request **(directions only)** so your generation layer can produce final text & tags.
+---
