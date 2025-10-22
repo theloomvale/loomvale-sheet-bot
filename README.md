@@ -1,24 +1,38 @@
-# Loomvale Sheet Bot (Final)
+# Loomvale Sheet Bot
 
-**Sheet columns (A→I)**  
-A Status | B Topic | C ImageSource | D SourceLinks | E ImagePrompt_Ambience | F ImagePrompt_Scenes | G Tone | H Caption+Hashtags Prompt | I Assistant
+Automates the creative content pipeline for the Loomvale brand.
 
-- Processes **5 rows/run** (cron: every 2 days @ 09:00 UTC + manual run).  
-- **Link rows:** finds up to 3 portrait (h≥800) URLs from trusted domains (official→reputable→Pinterest). If <3 → Assistant = “Couldn't find images” (bot retries next runs).  
-- **AI rows:** writes Ambience + 5 Scenes (Hugging Face readable), Tone, merged Caption+Hashtags prompt, Assistant = “Done”.  
-- **Fully empty rows:** filled **in place** with nerdy ideas; chooses AI vs Link and completes fields.
+### Overview
+This bot:
+- Reads the Google Sheet tab named **"Pipeline"**
+- Fills image prompts, tones, captions, and hashtags
+- Finds anime-related key visuals (for Link posts)
+- Generates cinematic AI prompts (for AI posts)
+- Restarts the Hugging Face image generator Space after each batch
 
-## Required Secrets
-- `GOOGLE_CREDENTIALS_JSON` (service account JSON, raw or base64)
-- `SHEET_ID` (spreadsheet key)
-- `GOOGLE_API_KEY` (Google CSE JSON API)
-- `GOOGLE_CX_ID` (Programmable Search Engine ID)
+---
 
-## Local test
-```bash
-export GOOGLE_CREDENTIALS_JSON='…'
-export SHEET_ID='…'
-export GOOGLE_API_KEY='…'
-export GOOGLE_CX_ID='…'
-python3 loomvale_sheet_bot.py
-```
+### Environment Variables (Secrets)
+| Name | Description |
+|------|--------------|
+| `GOOGLE_API_KEY` | Google Custom Search API key |
+| `GOOGLE_CX_ID` | Programmable Search Engine CX ID |
+| `GOOGLE_CREDENTIALS_JSON` | Service account credentials JSON (stringified) |
+| `SHEET_ID` | Google Sheet ID |
+| `HF_TOKEN` | Hugging Face API token |
+| `HF_SPACE_URL` | URL to your Hugging Face Space (e.g. https://huggingface.co/spaces/Theloomvale/loomvale-image-lab) |
+
+---
+
+### Schedule
+- Runs automatically every **2 days at 09:00 UTC**
+- Can be **triggered manually** under the “Actions” tab
+
+---
+
+### Output
+- Updates your Sheet in place.
+- `Assistant` column will show:
+  - `Done` — processed successfully  
+  - `Couldn't find images` — link search failed  
+  - `Error` — something went wrong  
