@@ -1,49 +1,37 @@
-# Loomvale Sheet Bot (new layout)
+# Loomvale Sheet Bot
 
-Automates your Google Sheet **Pipeline** tab with two post types:
+Automates the **Pipeline** Google Sheet:
 
-- **Link** rows: finds up to **3 portrait** poster/key-visual URLs from reputable domains via Google CSE and writes them to **D: SourceLinks**.
-- **AI** rows: waits for prompts (E/F), then calls your Hugging Face Space to generate **5 images** and writes their URLs to **G: AI generated images**.
+**Columns (A→J):**
 
-## Sheet columns (A→J)
+A Status | B Topic | C ImageSource | D SourceLinks | E ImagePrompt_Ambience | F ImagePrompt_Scenes | G AI generated images | H Tone | I Caption+Hashtags Prompt | J Assistant
 
-A `Status`  
-B `Topic`  
-C `ImageSource` ("AI" or "Link")  
-D `SourceLinks` (Link rows)  
-E `ImagePrompt_Ambience` (Assistant fills)  
-F `ImagePrompt_Scenes` (Assistant fills)  
-G `AI generated images` (this bot writes 5 URLs)  
-H `Tone` (bot fills)  
-I `Caption+Hashtags Prompt` (bot fills – *directions only*)  
-J `Assistant` (state: Needs Prompts / Needs Images / Done / Couldn't find images / Error)
+## What it does
 
-## State machine
+- Processes up to **5 rows per run**.
+- If a row is **fully empty** (B..J), the bot **creates a new post idea**:
+  - 60% **AI** → fills E (Ambience) + F (5 Scenes), H (Tone), I (Caption+Hashtags), sets J = `Needs AI Images`, leaves D/G empty.
+  - 40% **Link** → finds up to 3 portrait poster URLs (D), fills H/I, sets J = `Done` (3 links) or `Couldn't find images`, leaves E/F/G empty.
+- For existing rows:
+  - **AI** → fills missing Ambience/Scenes/Caption prompt; sets J = `Needs AI Images`.
+  - **Link** → finds portrait URLs if missing; sets J accordingly; fills Tone & Caption prompt.
 
-- **AI rows**
-  - If E or F is empty → `Assistant = Needs Prompts` (the OpenAI Assistant should fill E/F)
-  - If E+F present and G empty → bot calls your HF Space → writes 5 URLs in **G** → `Done`
-- **Link rows**
-  - Bot writes up to 3 portrait URLs to **D**
-  - 3 found → `Done`; fewer → `Couldn't find images`
+## Setup
 
-## Secrets (GitHub → Settings → Secrets and variables → Actions)
+### GitHub secrets
 
-- `GOOGLE_CREDENTIALS_JSON` — service account JSON
-- `SHEET_ID`
-- `WORKSHEET_NAME` — e.g., `Pipeline`
-- `GOOGLE_API_KEY` + `GOOGLE_CX_ID` — optional (for Link rows via Google CSE)
-- `HF_SPACE_URL` — e.g. `https://huggingface.co/spaces/Theloomvale/loomvale-image-lab`
-- `HF_TOKEN` — optional; required if Space is private
-- `MAX_ROWS_PER_RUN` — optional (default `5`)
+- `SHEET_ID` – your Google Sheet ID
+- `PIPELINE_TAB` – (optional) tab name, default `Pipeline`
+- `GOOGLE_CREDENTIALS_JSON` – service account JSON (raw or base64)
+- `GOOGLE_API_KEY` – Google Custom Search JSON API key
+- `GOOGLE_CX_ID` – Custom Search Engine ID (image search enabled, limited to your domains)
 
-## Run
+### Run
 
-- Manual: **Actions → Run workflow**
-- Scheduled: every **2 days at 09:00 UTC** (edit in `.github/workflows/loomvale-cron.yml`)
+- Manual: **Actions → Loomvale Sheet Bot → Run workflow**
+- Auto: every **2 days @ 09:00 UTC** (see cron)
 
-## Notes
+### Notes
 
-- Bot never overwrites A/B/C.
-- For AI rows it **waits** for prompts; it does not generate them. Your OpenAI Assistant should write **E** and **F** first.
-- The HF Space should either return permanent HTTP links in its API response or upload images to the Space repo and return those URLs. (Your latest Space does this.)
+- Portrait filter: vertical (h > w) and height ≥ 800, whitelisted/official domains preferred (Pinterest allowed as fallback).
+- `I` merges caption + hashtags request **(directions only)** so your generation layer can produce final text & tags.
