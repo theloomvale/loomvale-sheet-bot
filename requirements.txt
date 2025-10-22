@@ -1,4 +1,7 @@
-gspread>=6.0.0
-google-api-python-client>=2.131.0
-google-auth>=2.33.0
-requests>=2.31.0
+gspread==6.1.2
+google-auth==2.35.0
+google-api-python-client==2.153.0
+requests==2.32.3
+openai==1.50.2
+huggingface_hub==0.26.2
+python-dotenv==1.0.1
