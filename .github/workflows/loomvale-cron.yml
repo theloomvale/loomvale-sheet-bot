@@ -2,8 +2,13 @@ name: Loomvale Sheet Bot
 
 on:
   schedule:
-    - cron: "0 9 */2 * *"   # every 2 days @ 09:00 UTC
-  workflow_dispatch: {}      # allows manual run button
+    - cron: "0 9 */2 * *"   # every 2 days at 09:00 UTC
+  workflow_dispatch:        # enables manual run
+    inputs:
+      debug:
+        description: "Run in debug mode (process 1 row)"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -36,5 +41,14 @@ jobs:
           PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_MODEL: ${{ secrets.HF_MODEL }}
-          HF_SPACE_URL: ${{ secrets.HF_SPACE_URL }}
-        run: python loomvale_sheet_bot.py
+          DEBUG_MODE: ${{ github.event.inputs.debug }}
+        run: |
+          echo "🔹 Starting Loomvale Sheet Bot..."
+          echo "⏰ Timestamp: $(date)"
+          echo "🐍 Python version:"
+          python --version
+          echo "📦 Installed dependencies:"
+          pip list
+          echo "🚀 Running sheet bot..."
+          python loomvale_sheet_bot.py || echo "❌ Script exited with error."
+          echo "✅ Workflow finished."
