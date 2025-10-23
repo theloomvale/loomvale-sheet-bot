@@ -1,42 +1,37 @@
-name: Loomvale Bot
+name: Loomvale Sheet Bot
 
 on:
-  workflow_dispatch: {}
   schedule:
-    - cron: "0 9 */2 * *"   # every 2 days 09:00 UTC
+    - cron: "0 9 */2 * *"  # Every 2 days at 09:00 UTC
+  workflow_dispatch:
 
 jobs:
-  run:
+  run-bot:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Loomvale bot (process pass)
+      - name: Run Loomvale Sheet Bot
         env:
           SHEET_ID: ${{ secrets.SHEET_ID }}
-          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}     # e.g. Pipeline ; or leave empty to use first sheet
+          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-
-          # Google CSE (Link rows). If you don't set these, Link rows simply won't add URLs.
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_CX_ID: ${{ secrets.GOOGLE_CX_ID }}
-
-          # Hugging Face (AI rows). HF_AUTOGEN=false will defer to the follow-up job.
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_MODEL: ${{ secrets.HF_MODEL }}
-          HF_AUTOGEN: ${{ secrets.HF_AUTOGEN }}         # "true" or "false" (recommended false)
-          MAX_ROWS_PER_RUN: "5"
-          MODE: "process"
+          HF_AUTOGEN: "false"
         run: |
           python loomvale_sheet_bot.py
