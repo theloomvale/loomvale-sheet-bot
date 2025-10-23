@@ -2,12 +2,18 @@ name: Loomvale Hugging Face Worker
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # every 30 minutes
-  workflow_dispatch:
+    - cron: "*/30 * * * *"   # every 30 minutes
+  workflow_dispatch: {}      # manual run button
+
+concurrency:
+  group: loomvale-hf-worker
+  cancel-in-progress: false
 
 jobs:
   generate-images:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,13 +28,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Hugging Face Worker
+      - name: Render pending AI rows (Assistant = "Generate Images")
         env:
           SHEET_ID: ${{ secrets.SHEET_ID }}
-          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}
+          PIPELINE_TAB: ${{ secrets.PIP​ELINE_TAB }}         # e.g. Pipeline
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_MODEL: ${{ secrets.HF_MODEL }}
-          MODE: generate
+          HF_MODEL: ${{ secrets.HF_MODEL }}                  # default SDXL; selectable in Space if you added toggles
+          MODE: generate                                     # loomvale_sheet_bot.py switches to HF render mode
         run: |
           python loomvale_sheet_bot.py
