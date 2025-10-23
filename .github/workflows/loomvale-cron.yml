@@ -1,54 +1,44 @@
-name: Loomvale Sheet Bot
+# --- header normalization helpers (drop punctuation, lower) ---
+import re
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
-on:
-  schedule:
-    - cron: "0 9 */2 * *"   # every 2 days at 09:00 UTC
-  workflow_dispatch:        # enables manual run
-    inputs:
-      debug:
-        description: "Run in debug mode (process 1 row)"
-        required: false
-        default: "false"
+# Canonical header keys we need (A→I)
+CANONICAL_HEADERS = {
+    "status": "Status",
+    "topic": "Topic",
+    "imagesource": "ImageSource",
+    "sourcelinks": "SourceLinks",
+    "imageprompt_ambience": "ImagePrompt_Ambience",
+    "imageprompt_scenes": "ImagePrompt_Scenes",
+    "tone": "Tone",
+    "captionhashtagsprompt": "Caption+Hashtags Prompt",
+    "assistant": "Assistant",
+}
 
-permissions:
-  contents: read
+def header_map(ws):
+    headers = [h.strip() for h in ws.row_values(1)]
+    norm_to_index = {_norm(h): i+1 for i, h in enumerate(headers)}
 
-jobs:
-  run-bot:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run Loomvale Sheet Bot
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GOOGLE_CX_ID: ${{ secrets.GOOGLE_CX_ID }}
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_MODEL: ${{ secrets.HF_MODEL }}
-          DEBUG_MODE: ${{ github.event.inputs.debug }}
-        run: |
-          echo "🔹 Starting Loomvale Sheet Bot..."
-          echo "⏰ Timestamp: $(date)"
-          echo "🐍 Python version:"
-          python --version
-          echo "📦 Installed dependencies:"
-          pip list
-          echo "🚀 Running sheet bot..."
-          python loomvale_sheet_bot.py || echo "❌ Script exited with error."
-          echo "✅ Workflow finished."
+    mapping = {}
+    for k, canon in CANONICAL_HEADERS.items():
+        nk = _norm(canon)
+        if nk not in norm_to_index:
+            # try some common variants
+            aliases = {
+                "captionhashtagsprompt": ["captionhashtags", "captionprompthashtags", "captionandhashtags", "caption_hashtags_prompt"],
+                "imageprompt_scenes": ["imageprompts_scenes", "imagepromptscenes"],
+                "imageprompt_ambience": ["imagepromptambience", "ambience", "imageprompt_a"],
+                "sourcelinks": ["links", "sourcelinksimages"],
+            }.get(k, [])
+            found = None
+            for alias in [nk] + aliases:
+                if alias in norm_to_index:
+                    found = alias
+                    break
+            if not found:
+                raise RuntimeError(f"Missing header: '{canon}'. Found: {headers}")
+            mapping[k] = norm_to_index[found]
+        else:
+            mapping[k] = norm_to_index[nk]
+    return mapping
