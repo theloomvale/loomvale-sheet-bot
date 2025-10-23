@@ -2,12 +2,17 @@ name: Loomvale Sheet Bot
 
 on:
   schedule:
-    - cron: "0 9 */2 * *"  # Every 2 days at 09:00 UTC
-  workflow_dispatch:
+    - cron: "0 9 */2 * *"   # every 2 days @ 09:00 UTC
+  workflow_dispatch: {}      # manual run button
+
+concurrency:
+  group: loomvale-sheet-bot
+  cancel-in-progress: false  # never cancel a running job mid-write
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -23,15 +28,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Loomvale Sheet Bot
+      - name: Run Loomvale Sheet Bot (ideas, prompts, link search)
         env:
           SHEET_ID: ${{ secrets.SHEET_ID }}
-          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}
+          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}          # e.g. Pipeline
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_CX_ID: ${{ secrets.GOOGLE_CX_ID }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_MODEL: ${{ secrets.HF_MODEL }}
-          HF_AUTOGEN: "false"
+          HF_MODEL: ${{ secrets.HF_MODEL }}                  # e.g. stabilityai/stable-diffusion-xl-base-1.0
+          HF_AUTOGEN: "false"                                # sheet bot won't render; HF worker will
         run: |
           python loomvale_sheet_bot.py
