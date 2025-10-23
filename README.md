@@ -26,10 +26,10 @@ Also share your Sheet with the **service account email** from your credentials a
 
 ## Workflows
 
-- **Loomvale Bot** (`.github/workflows/loomvale-cron.yml`)  
-  Runs every **2 days at 09:00 UTC** (plus manual). Creates ideas, fills prompts, finds Link images, and — if enabled — generates AI images.
+- **Every 2 days:** The bot (loomvale-cron.yml) creates new ideas, fills prompts, and finds links. (pulus manual)
+- **Every 30 minutes:** The HF worker (loomvale-hf.yml) generates AI images for pending rows.
+- If image search fails → the bot still creates full posts with prompts, captions, and “Couldn’t find images” status. (pulus manual)
+- If Hugging Face model is ready → the AI worker auto-fills drive URLs.
 
-- **Loomvale HF Image Worker** (`.github/workflows/loomvale-hf.yml`)  
-  Runs every **30 minutes**. Looks for rows with `Assistant = Generate Images` and fills G with 5 shareable Google Drive URLs. Sets `Assistant = Done`.
 
 ---
