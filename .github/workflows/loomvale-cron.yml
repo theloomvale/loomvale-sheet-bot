@@ -1,36 +1,60 @@
 name: Loomvale Sheet Bot
 
 on:
-  workflow_dispatch:      # 👈 Enables manual run button
+  workflow_dispatch:        # Allows manual run from the Actions tab
   schedule:
-    - cron: "0 9 */2 * *"  # Runs every 2 days at 09:00 UTC
+    - cron: "0 9 */2 * *"   # Auto-run every 2 days at 09:00 UTC
 
 jobs:
   run:
+    name: Run Loomvale Sheet Automation
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - name: Checkout
+      - name: 🧩 Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: 🐍 Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+        shell: bash
 
-      - name: Run Loomvale Sheet Bot
+      - name: ⚙️ Verify Google credentials
+        run: |
+          echo "Checking Google credentials..."
+          if [ -z "${{ secrets.GOOGLE_CREDENTIALS_JSON }}" ]; then
+            echo "❌ GOOGLE_CREDENTIALS_JSON not set!"
+            exit 1
+          fi
+          echo "✅ GOOGLE_CREDENTIALS_JSON is present."
+
+      - name: 🚀 Run Loomvale Sheet Bot
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           GOOGLE_CX_ID: ${{ secrets.GOOGLE_CX_ID }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
+          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_MODEL: ${{ secrets.HF_MODEL }}
-          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python loomvale_sheet_bot.py
+          echo "🔄 Starting Loomvale Sheet Bot..."
+          python loomvale_sheet_bot.py || {
+            echo "❌ Bot execution failed."
+            exit 1
+          }
+          echo "✅ Loomvale Sheet Bot finished successfully."
+
+      - name: 🧾 Post-run summary
+        if: always()
+        run: |
+          echo "📊 Run complete — check Google Sheet for updates."
+          echo "Timestamp: $(date -u)"
