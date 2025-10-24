@@ -1,3 +1,8 @@
+name: Loomvale Sheet Bot
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 */2 * *'
 # --- header normalization helpers (drop punctuation, lower) ---
 import re
 def _norm(s: str) -> str:
