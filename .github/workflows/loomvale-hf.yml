@@ -2,8 +2,8 @@ name: Loomvale Hugging Face Worker
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
-  workflow_dispatch: {}      # manual run button
+    - cron: "*/30 * * * *"     # every 30 minutes
+  workflow_dispatch:           # enables manual run button
 
 concurrency:
   group: loomvale-hf-worker
@@ -11,30 +11,43 @@ concurrency:
 
 jobs:
   generate-images:
+    name: Generate AI Images from Pending Rows
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Checkout repository
+      - name: 🧩 Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 🐍 Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.11'
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+        shell: bash
 
-      - name: Render pending AI rows (Assistant = "Generate Images")
+      - name: 🧠 Run Hugging Face AI Generator
         env:
           SHEET_ID: ${{ secrets.SHEET_ID }}
-          PIPELINE_TAB: ${{ secrets.PIP​ELINE_TAB }}         # e.g. Pipeline
+          PIPELINE_TAB: ${{ secrets.PIPELINE_TAB }}          # e.g. "Pipeline"
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_MODEL: ${{ secrets.HF_MODEL }}                  # default SDXL; selectable in Space if you added toggles
-          MODE: generate                                     # loomvale_sheet_bot.py switches to HF render mode
+          HF_MODEL: ${{ secrets.HF_MODEL }}                  # e.g. stabilityai/stable-diffusion-xl-base-1.0
+          MODE: generate                                     # tells bot to run in Hugging Face generation mode
         run: |
-          python loomvale_sheet_bot.py
+          echo "🚀 Running Loomvale Hugging Face Worker..."
+          python loomvale_sheet_bot.py || {
+            echo "❌ Hugging Face generation failed."
+            exit 1
+          }
+          echo "✅ AI image generation process completed successfully."
+
+      - name: 🧾 Post-run summary
+        if: always()
+        run: |
+          echo "🖼️ Hugging Face Worker finished."
+          echo "Timestamp: $(date -u)"
