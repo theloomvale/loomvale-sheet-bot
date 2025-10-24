@@ -54,10 +54,10 @@ H_SOURCE  = "ImageSource"
 H_LINKS   = "SourceLinks"
 H_AMBIENCE= "ImagePrompt_Ambience"
 H_SCENES  = "ImagePrompt_Scenes"
-H_AI_URLS = "AI generated images"         # column G
 H_TONE    = "Tone"
-H_CAPHASH = "Caption+Hashtags Prompt"     # merged column I
+H_CAPHASH = "Caption+Hashtags Prompt"     # merged column H
 H_ASSIST  = "Assistant"
+H_AI_URLS = "AI generated images"         # column J
 
 # Domains preference for links
 PREFERRED_DOMAINS = {
@@ -260,8 +260,6 @@ def build_scenes_block(topic: str) -> str:
              '(handwritten gray) a song you only love on rainy days.'),
             ("Notebook", "Close-up of pencil notes; stickers; coffee stains",
              '(handwritten gray) the page forgives my messy heart.'),
-            ("Alley bakery", "Paper bag; illustrated buns; soft neon reflections",
-             'Boy (manga font): "still warm."'),
             ("Quiet night", "Cassette player; soft lamp; curtains breathe",
              '(handwritten gray) midnight, not lonely—just softer.')
         ]
@@ -275,13 +273,9 @@ def build_scenes_block(topic: str) -> str:
              'Boy (manga font): "breathe."'),
             ("Arcade", "CRT glow; coins; claw machine plush",
              '(handwritten gray) losing is part of the charm.'),
-            ("Street ramen", "Steam cloud; plastic stools; laughter haze",
-             '(handwritten gray) salt & comfort.')
         ]
     elif arc == "fantasy":
         scenes = [
-            ("Forest edge", "Morning mist; tiny spirits in moss",
-             '(handwritten gray) the quiet knows my name.'),
             ("Shrine", "Paper talismans sway; fox mask half-lit",
              'Girl (manga font): "stay a little."'),
             ("Riverbank", "Lanterns drift; ripples echo stars",
@@ -297,8 +291,6 @@ def build_scenes_block(topic: str) -> str:
              'Boy (manga font): "you’ll catch a cold." / (handwritten gray) saying what he can.'),
             ("Crosswalk", "Neon puddles; quiet mist",
              'Girl (manga font): "the rain’s softer now."'),
-            ("Bus shelter", "Shared earbud; raindrops on glass",
-             '(handwritten gray) the song ends before we do.'),
             ("Goodbye", "Door slides; motion blur; his eyes down",
              'Boy (manga font): "see you."'),
             ("After rain", "Forgotten umbrella; golden hush",
@@ -407,10 +399,10 @@ def seed_row_values(topic: str, image_source: str) -> list:
         "",                          # D SourceLinks
         ambience,                    # E ImagePrompt_Ambience
         scenes,                      # F ImagePrompt_Scenes
-        "",                          # G AI generated images
-        tone,                        # H Tone
-        make_caption_prompt(topic, tone),  # I Caption+Hashtags Prompt
-        "To do",                     # J Assistant
+        "",                          # J AI generated images
+        tone,                        # G Tone
+        make_caption_prompt(topic, tone),  # H Caption+Hashtags Prompt
+        "To do",                     # I Assistant
     ]
 
 def append_new_idea_rows(ws, hdr: dict, n: int = 5):
